@@ -53,11 +53,6 @@ yarn-error.log*
 logs/
 *.log
 
-# Runtime files
-*.runtimeconfig.json
-*.deps.json
-*.runtimeconfig.dev.json
-
 # Sensitive files
 *.key
 *.pem
