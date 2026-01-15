@@ -51,10 +51,12 @@ RegionSnip is designed to be called programmatically and outputs JSON results to
 | Argument | Description | Example |
 |----------|-------------|---------|
 | `--mode <mode>` | Capture mode: `full` or `region` (default: region) | `--mode full` |
-| `--out <path>` | Output PNG file path (required) | `--out screenshot.png` |
+| `--out <path>` | Output file path (required). Use `.jpg` or `.jpeg` for JPEG compression. | `--out screenshot.jpg` |
 | `--all` | Capture all monitors (full mode only) | `--all` |
 | `--monitor <n>` | Specific monitor index (0-based, full mode only) | `--monitor 1` |
 | `--prompt <text>` | Custom prompt text for region selection | `--prompt "Select area"` |
+| `--quality <n>` | JPEG quality level (1-100, default: 80) | `--quality 80` |
+| `--scale <n>` | Image scaling factor (0.1-1.0, default: 0.75 for full, 1.0 for region) | `--scale 0.5` |
 
 ### Examples
 
@@ -81,6 +83,12 @@ RegionSnip.exe --mode region --out screenshot.png
 #### Interactive region selection with custom prompt:
 ```bash
 RegionSnip.exe --mode region --out screenshot.png --prompt "Drag to select the area to capture"
+```
+
+#### JPEG Capture with Compression and Scaling:
+```bash
+# Save as JPEG with 80% quality and 50% size
+RegionSnip.exe --mode full --out screenshot.jpg --quality 80 --scale 0.5
 ```
 
 ## Output Format

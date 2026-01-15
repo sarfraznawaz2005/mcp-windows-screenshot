@@ -1,10 +1,14 @@
 using System;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 using System.Threading;
 using System.Windows.Forms;
+
+namespace RegionSnip;
 
 internal static class Program
 {
@@ -16,6 +20,8 @@ internal static class Program
         string prompt = "Drag to select an area. Press Esc to cancel.";
         int monitorIndex = 0;   // 0-based
         bool captureAll = false;
+        int? qualityArg = null;       // 1-100 (for Jpeg)
+        double? scaleArg = null;     // 0.1-1.0 (Resize factor)
 
         // Simple arg parsing
         for (int i = 0; i < args.Length; i++)
@@ -27,7 +33,13 @@ internal static class Program
             else if (a == "--prompt" && i + 1 < args.Length) prompt = args[++i];
             else if (a == "--monitor" && i + 1 < args.Length && int.TryParse(args[++i], out var mi)) monitorIndex = mi;
             else if (a == "--all") captureAll = true;
+            else if (a == "--quality" && i + 1 < args.Length && int.TryParse(args[++i], out var q)) qualityArg = Math.Clamp(q, 1, 100);
+            else if (a == "--scale" && i + 1 < args.Length && double.TryParse(args[++i], out var s)) scaleArg = Math.Clamp(s, 0.1, 1.0);
         }
+
+        // Apply defaults
+        int quality = qualityArg ?? 80;
+        double scale = scaleArg ?? (mode == "full" ? 0.75 : 1.0);
 
         if (string.IsNullOrWhiteSpace(outPath))
         {
@@ -44,7 +56,7 @@ internal static class Program
 
             if (mode == "full")
             {
-                var result = CaptureFull(outPath!, captureAll, monitorIndex);
+                var result = CaptureFull(outPath!, captureAll, monitorIndex, quality, scale);
                 WriteJson(result);
                 // Notification handled inside CaptureFull? 
                 // Let's move it here for consistency.
@@ -54,7 +66,7 @@ internal static class Program
 
             // region mode (interactive)
             ApplicationConfiguration.Initialize();
-            using var form = new SnipOverlayForm(prompt, outPath!);
+            using var form = new SnipOverlayForm(prompt, outPath!, quality, scale);
             Application.Run(form);
             
             // Handle result from form
@@ -89,7 +101,73 @@ internal static class Program
         }
     }
 
-    private static object CaptureFull(string outPath, bool all, int monitorIndex)
+    internal static void SaveBitmap(Bitmap source, string path, int quality, double scale)
+    {
+        // 1. Resize if needed
+        Bitmap toSave = source;
+        bool resized = false;
+
+        if (scale < 1.0 && scale > 0)
+        {
+            int newW = (int)(source.Width * scale);
+            int newH = (int)(source.Height * scale);
+            // Ensure at least 1x1
+            newW = Math.Max(1, newW);
+            newH = Math.Max(1, newH);
+
+            var scaledBmp = new Bitmap(newW, newH);
+            using (var g = Graphics.FromImage(scaledBmp))
+            {
+                g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                g.CompositingQuality = CompositingQuality.HighQuality;
+                g.SmoothingMode = SmoothingMode.HighQuality;
+                g.DrawImage(source, 0, 0, newW, newH);
+            }
+            toSave = scaledBmp;
+            resized = true;
+        }
+
+        try
+        {
+            var ext = Path.GetExtension(path).ToLowerInvariant();
+            if (ext == ".jpg" || ext == ".jpeg")
+            {
+                // Save as JPEG with specific quality
+                var jpegEncoder = GetEncoder(ImageFormat.Jpeg);
+                if (jpegEncoder != null)
+                {
+                    using var encoderParameters = new EncoderParameters(1);
+                    encoderParameters.Param[0] = new EncoderParameter(Encoder.Quality, (long)quality);
+                    toSave.Save(path, jpegEncoder, encoderParameters);
+                }
+                else
+                {
+                    // Fallback
+                    toSave.Save(path, ImageFormat.Jpeg);
+                }
+            }
+            else
+            {
+                // Default to PNG
+                toSave.Save(path, ImageFormat.Png);
+            }
+        }
+        finally
+        {
+            if (resized)
+            {
+                toSave.Dispose();
+            }
+        }
+    }
+
+    private static ImageCodecInfo? GetEncoder(ImageFormat format)
+    {
+        var codecs = ImageCodecInfo.GetImageDecoders();
+        return codecs.FirstOrDefault(codec => codec.FormatID == format.Guid);
+    }
+
+    private static object CaptureFull(string outPath, bool all, int monitorIndex, int quality, double scale)
     {
         Rectangle bounds;
 
@@ -111,7 +189,8 @@ internal static class Program
         using var bmp = new Bitmap(bounds.Width, bounds.Height);
         using var g = Graphics.FromImage(bmp);
         g.CopyFromScreen(bounds.Left, bounds.Top, 0, 0, bmp.Size);
-        bmp.Save(outPath, ImageFormat.Png);
+        
+        SaveBitmap(bmp, outPath, quality, scale);
 
         return new
         {
@@ -165,6 +244,8 @@ public sealed class SnipOverlayForm : Form
 {
     private readonly string _prompt;
     private readonly string _outPath;
+    private readonly int _quality;
+    private readonly double _scale;
 
     private bool _dragging;
     private Point _start;
@@ -178,10 +259,12 @@ public sealed class SnipOverlayForm : Form
     public bool ShowSuccessNotification { get; private set; }
     public string? ErrorMessage { get; private set; }
 
-    public SnipOverlayForm(string prompt, string outPath)
+    public SnipOverlayForm(string prompt, string outPath, int quality, double scale)
     {
         _prompt = prompt;
         _outPath = outPath;
+        _quality = quality;
+        _scale = scale;
 
         var vs = SystemInformation.VirtualScreen;
         Bounds = vs;
@@ -293,16 +376,11 @@ public sealed class SnipOverlayForm : Form
         var absX = vs.Left + rectOnForm.Left;
         var absY = vs.Top + rectOnForm.Top;
 
-        // Ensure directory is created in Main or here? 
-        // Main calls EnsureDirectoryExists, but just to be safe if reused:
-        // Directory.CreateDirectory(Path.GetDirectoryName(_outPath)!);
-        // Assuming Main handled it or we handle it here. 
-        // Let's rely on Main having called EnsureDirectoryExists(outPath) before running the form.
-
         using var bmp = new Bitmap(rectOnForm.Width, rectOnForm.Height);
         using var g = Graphics.FromImage(bmp);
         g.CopyFromScreen(absX, absY, 0, 0, bmp.Size);
-        bmp.Save(_outPath, ImageFormat.Png);
+        
+        Program.SaveBitmap(bmp, _outPath, _quality, _scale);
 
         ShowSuccessNotification = true;
         ResultObject = new
